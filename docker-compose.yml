@@ -1,0 +1,6 @@
+version: "3.3"
+services:
+  mlapp:
+    ports:
+      - "9000:5000"
+    image: mlapp
