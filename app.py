@@ -1,60 +1,115 @@
 from flask import Flask, request, jsonify, Response
 from detoxify import Detoxify
-import numpy as np
 from transformers import pipeline
 
-import tensorflow as tf
-from transformers import DistilBertTokenizer, DistilBertForSequenceClassification
-
 from multiprocessing import Process, Queue
-import sys
 
 app = Flask(__name__)
 
 sentimentClassifier = pipeline("sentiment-analysis")
 abusiveClassifier = Detoxify("original")
+sentimentProcess = None
+abusiveProcess = None
+sentimentQueue = Queue()
+abusiveQueue = Queue()
 
 
-def getSentimentAnalysis(input, q1):
-    q1.put(sentimentClassifier(input))
-    return 1
+def sentiment_worker(queue):
+    while True:
+        # Wait for input from the queue
+        inputData = queue.get()
+
+        # Perform the ML inference on inputData
+        result = sentimentClassifier(input)
+
+        # Put the result in the queue for Flask to retrieve
+        queue.put(result)
 
 
-def getAbuseAnalysis(input, q2):
-    q2.put(abusiveClassifier.predict(input))
-    return 1
+def abusive_worker(queue):
+    while True:
+        # Wait for input from the queue
+        inputData = queue.get()
+
+        # Perform the ML inference on inputData
+        result = sentimentClassifier(input)
+
+        # Put the result in the queue for Flask to retrieve
+        queue.put(result)
 
 
-@app.route("/", methods=["GET", "POST"])
-def makeCalc():
-    if request.method == "POST":
-        data = request.get_json()
-
+# If the processes are not running, start them
+def process_restart():
+    if sentimentProcess is None or not sentimentProcess.is_alive():
         sentimentProcess = Process(
-            target=getSentimentAnalysis, args=(data["modelInput"], sentimentQueue)
+            target=sentiment_worker(queue), args=(sentimentQueue,)
         )
-        abusiveProcess = Process(
-            target=getAbuseAnalysis, args=(data["modelInput"], abusiveQueue)
-        )
-
         sentimentProcess.start()
+
+    if abusiveProcess is None or not abusiveProcess.is_alive():
+        abusiveProcess = Process(target=sentiment_worker(queue), args=(abusiveQueue,))
         abusiveProcess.start()
 
-        abusiveResult = abusiveQueue.get()
-        sentimentResult = sentimentQueue.get()
 
-        print(sentimentResult, flush=True)
-        print(abusiveResult, flush=True)
+@app.route("/", methods=["POST"])
+def inference_engine():
+    # Get the input data from the POST request
+    inputData = request.get_json()["modelInput"]
 
-        return jsonify(
-            {"sentimentAnalysis": sentimentResult, "abuseAnalysis": abusiveResult}
-        )
+    process_restart()
 
-    return Response(
-        jsonify({error: "Not a proper request method or data"}),
-        status=400,
-        mimetype="application/json",
+    # Pass the input data to the processes through the queue
+    sentimentQueue.put(inputData)
+    abusiveQueue.put(inputData)
+
+    # Wait for the result from the processes
+    abusiveResult = abusiveQueue.get()
+    sentimentResult = sentimentQueue.get()
+
+    # Return the result as a response
+    print(sentimentResult, flush=True)
+    print(abusiveResult, flush=True)
+
+    return jsonify(
+        {"sentimentAnalysis": sentimentResult, "abuseAnalysis": abusiveResult}
     )
+
+
+@app.route("/", methods=["GET"])
+def root():
+    return """Send a post request with body : 
+        {
+            modelInput: <String array>
+        }
+
+        Response format : 
+        {
+            abusiveAnalysis:  {
+                "identity_attack": [
+                    Int
+                ],
+                "insult": [
+                    Int
+                ],
+                "obscene": [
+                    Int
+                ],
+                "severe_toxicity": [
+                    Int
+                ],
+                "threat": [
+                    Int
+                ],
+                "toxicity": [
+                    Int
+                ]
+            },
+            sentimentAnalysis:  {
+                "label": "POSITIVE/NEGATIVE",
+                "score": Int
+            }
+        }
+    """
 
 
 if __name__ == "__main__":
@@ -63,8 +118,5 @@ if __name__ == "__main__":
     # tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True)
     # classifier = pipeline('sentiment-analysis', model=model, tokenizer=tokenizer)
     # classifier([input])
-
-    sentimentQueue = Queue()
-    abusiveQueue = Queue()
 
     app.run(debug=True, host="0.0.0.0")
